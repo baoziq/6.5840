@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"strconv"
+	"time"
 )
 
 // Map functions return a slice of KeyValue.
@@ -24,9 +26,6 @@ func ihash(key string) int {
 
 var coordSockName string // socket for coordinator
 
-var response_args ReportTaskArgs
-var response_reply ReportTaskReply
-
 // main/mrworker.go calls this function.
 func Worker(sockname string, mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -39,20 +38,33 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 	// CallExample()
 
 	for {
-		task, ok := WorkerCall()
+		task, ok := WorkerCall(coordSockName)
 		if !ok {
 			return
 		}
-		switch task.TaskType {
+		switch task.Type {
+		case MapTask:
+			kva := mapf(task.FileName, task.Content)
+			for _, kv := range kva {
+				index := ihash(kv.Key) % task.NReduce
+				filename := "mr" + strconv.Itoa(task.MapId) + strconv.Itoa(index)
 
+			}
+
+		case ReduceTask:
+
+		case WaitTask:
+			time.Sleep(1 * time.Second)
+		case ExitTask:
+			return
 		}
 	}
 }
 
-func WorkerCall() (RequestTaskReply, bool) {
+func WorkerCall(coordSockName string) (RequestTaskReply, bool) {
 	response_args := RequestTaskArgs{}
 	response_reply := RequestTaskReply{}
-	ok := call("Coordinator.Example", &response_args, &response_reply)
+	ok := call("coordSockName", &response_args, &response_reply)
 	return response_reply, ok
 }
 

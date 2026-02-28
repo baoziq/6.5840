@@ -31,12 +31,14 @@ const (
 )
 
 type RequestTaskArgs struct {
-	WorkerId int
 }
 
 type RequestTaskReply struct {
+	NReduce  int
+	MapId    int
 	Type     TaskType
 	FileName string
+	Content  string
 }
 
 type ReportTaskArgs struct {
