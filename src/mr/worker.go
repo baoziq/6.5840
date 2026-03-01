@@ -1,12 +1,13 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log"
 	"net/rpc"
 	"os"
-	"strconv"
+	"sort"
 	"time"
 )
 
@@ -24,6 +25,14 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 var coordSockName string // socket for coordinator
 
 // main/mrworker.go calls this function.
@@ -38,21 +47,71 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 	// CallExample()
 
 	for {
-		task, ok := WorkerCall(coordSockName)
+		task, ok := WorkerCall()
 		if !ok {
 			return
 		}
 		switch task.Type {
 		case MapTask:
 			kva := mapf(task.FileName, task.Content)
+			buckets := make([][]KeyValue, task.NReduce)
 			for _, kv := range kva {
 				index := ihash(kv.Key) % task.NReduce
-				filename := "mr" + strconv.Itoa(task.MapId) + strconv.Itoa(index)
-
+				buckets[index] = append(buckets[index], kv)
 			}
+			for i := 0; i < task.NReduce; i++ {
+				filename := fmt.Sprintf("mr-%d-%d", task.MapId, i)
+				ofile, _ := os.Create(filename)
+				enc := json.NewEncoder(ofile)
+				for _, kv := range buckets[i] {
+					enc.Encode(&kv)
+				}
+				ofile.Close()
+			}
+			report_args := ReportTaskArgs{}
+			report_reply := ReportTaskReply{}
+			report_args.Type = MapTask
+			report_args.Result = true
+			report_args.Id = task.MapId
+			WorkerReply(report_args, report_reply)
 
 		case ReduceTask:
+			kva := []KeyValue{}
+			for i := 0; i < task.MapSum; i++ {
+				filename := fmt.Sprintf("mr-%d-%d", i, task.ReduceId)
+				ofile, _ := os.Open(filename)
+				dec := json.NewEncoder(ofile)
 
+				for {
+					var kv KeyValue
+					if err := dec.Encode(&kv); err != nil {
+						break
+					}
+					kva = append(kva, kv)
+				}
+			}
+			sort.Sort(ByKey(kva))
+			i := 0
+			for i < len(kva) {
+				j := i + 1
+				for j < len(kva) && kva[j].Key == kva[i].Key {
+					j++
+				}
+				values := []string{}
+				for k := i; k < j; k++ {
+					values = append(values, kva[k].Value)
+				}
+				output := reducef(kva[i].Key, values)
+				oname := fmt.Sprintf("mr-out-%d", task.ReduceId)
+				ofile, _ := os.Create(oname)
+				fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+				i = j
+			}
+			report_args := ReportTaskArgs{}
+			report_reply := ReportTaskReply{}
+			report_args.Type = ReduceTask
+			report_args.Result = true
+			WorkerReply(report_args, report_reply)
 		case WaitTask:
 			time.Sleep(1 * time.Second)
 		case ExitTask:
@@ -61,38 +120,16 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 	}
 }
 
-func WorkerCall(coordSockName string) (RequestTaskReply, bool) {
+func WorkerCall() (RequestTaskReply, bool) {
 	response_args := RequestTaskArgs{}
 	response_reply := RequestTaskReply{}
-	ok := call("coordSockName", &response_args, &response_reply)
+	ok := call("Coordinator.HandleRequest", &response_args, &response_reply)
 	return response_reply, ok
 }
 
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
+func WorkerReply(report_args ReportTaskArgs, report_reply ReportTaskReply) bool {
+	ok := call("Coordinator.HandleReport", &report_args, &report_reply)
+	return ok
 }
 
 // send an RPC request to the coordinator, wait for the response.

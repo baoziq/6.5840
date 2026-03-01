@@ -83,3 +83,103 @@ coordinator 要管理全局状态：
 ## 交付物是什么
 
 通常就是把 `mr/coordinator.go`、`mr/worker.go`（以及可能的 `rpc.go` 里补充的结构/常量）补全到能通过脚本测试即可——你不需要改应用层的 `mapf/reducef`，也不需要实现真正的分布式文件系统；输入输出都是本地文件。 
+
+---
+
+### coordinator
+
+## 1) Coordinator 先“注册”自己能被远程调用的方法
+
+在 coordinator 启动时通常会做类似这些事：
+
+- 创建一个 `Coordinator` 对象 `c`
+- 调用 `rpc.Register(c)`（或 `rpc.RegisterName("Coordinator", c)`）
+
+注册后，**Coordinator 上满足 RPC 规则的方法**就能被远程调用，例如：
+
+- 方法必须是导出的（首字母大写）
+- 形如：`func (c *Coordinator) RequestTask(args *X, reply *Y) error`
+- `args` 和 `reply` 都是指针、类型可被编码传输
+
+这样 worker 才能用字符串 `"Coordinator.RequestTask"` 访问到这个方法。
+
+------
+
+## 2) Coordinator 开一个“RPC 服务器”，监听 unix socket
+
+实验里一般是 unix domain socket：
+
+- coordinator 在某个路径创建 socket 文件（比如 `/var/tmp/5840-mr-xxx`）
+- 然后 `net/rpc`（通常配合 `rpc.HandleHTTP()` + `http.Serve`）开始监听
+
+从这一步开始：
+
+> 只要有进程连接这个 socket 并发 RPC 请求，coordinator 都能收到。
+
+------
+
+## 3) Worker 发起 `rpc.DialHTTP("unix", sock)` 并 `Call(...)`
+
+你 worker 的 `call()` 做了两件关键事：
+
+1. `DialHTTP`：连上 coordinator 的 socket
+2. `c.Call("Coordinator.RequestTask", &args, &reply)`：发请求并等待返回
+
+这里的 `args` 会被编码发送过去；`reply` 会在返回时被填充。
+
+------
+
+## 4) Coordinator 收到请求后：定位“要调用哪个方法”
+
+RPC 服务器会解析请求里的字符串：
+
+- `"Coordinator.RequestTask"`
+
+然后找到：
+
+- 目标对象：`Coordinator`
+- 目标方法：`RequestTask`
+
+------
+
+## 5) Coordinator 并发执行这个 RPC handler（重要）
+
+Go 的 RPC/HTTP 服务通常会 **为每个请求开一个 goroutine 来处理**。
+
+所以如果你同时起了多个 worker：
+
+- Worker1、Worker2、Worker3 同时请求任务
+- Coordinator 可能同时并发进入 `RequestTask(...)`
+
+这就是为什么你必须在 coordinator 里用 **mutex/锁** 保护共享状态（任务表、阶段机、计时信息），否则会出现：
+
+- 两个 worker 拿到同一个任务
+- 状态被并发写坏
+
+------
+
+## 6) 在 handler 里做“业务逻辑”：分配任务 / 更新状态
+
+以“请求任务”为例，`RequestTask` 里通常会：
+
+- 加锁
+- 根据当前阶段（Map / Reduce / Done）
+- 找一个 `Idle` 的任务
+- 标记为 `InProgress`、记录开始时间
+- 填充 `reply`（比如 `Type=MapTask, MapID=..., FileName=..., NReduce=...`）
+- 解锁
+- 返回 `nil`（表示 RPC 成功）
+
+“汇报完成”的 handler 同理：更新任务状态、可能推进阶段。
+
+------
+
+## 7) 返回：reply 被编码回传，worker 的 `reply` 被填上
+
+handler 返回后，RPC 框架会把 `reply` 编码，通过 socket 回到 worker。
+
+worker 这边 `Call` 返回后：
+
+- `call()` 返回 `true`
+- 你传进去的 `reply` 结构体已经有值了
+- worker 根据 `reply.Type` 决定执行 Map / Reduce / Wait / Exit
