@@ -45,7 +45,6 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
-
 	for {
 		task, ok := WorkerCall()
 		if !ok {
@@ -55,6 +54,7 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 		case MapTask:
 			kva := mapf(task.FileName, task.Content)
 			buckets := make([][]KeyValue, task.NReduce)
+			// fmt.Printf("bucket's len: %d\n", len(buckets))
 			for _, kv := range kva {
 				index := ihash(kv.Key) % task.NReduce
 				buckets[index] = append(buckets[index], kv)
@@ -80,11 +80,11 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 			for i := 0; i < task.MapSum; i++ {
 				filename := fmt.Sprintf("mr-%d-%d", i, task.ReduceId)
 				ofile, _ := os.Open(filename)
-				dec := json.NewEncoder(ofile)
+				dec := json.NewDecoder(ofile)
 
 				for {
 					var kv KeyValue
-					if err := dec.Encode(&kv); err != nil {
+					if err := dec.Decode(&kv); err != nil {
 						break
 					}
 					kva = append(kva, kv)
@@ -111,6 +111,7 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 			report_reply := ReportTaskReply{}
 			report_args.Type = ReduceTask
 			report_args.Result = true
+			report_args.Id = task.ReduceId
 			WorkerReply(report_args, report_reply)
 		case WaitTask:
 			time.Sleep(1 * time.Second)
@@ -123,6 +124,7 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 func WorkerCall() (RequestTaskReply, bool) {
 	response_args := RequestTaskArgs{}
 	response_reply := RequestTaskReply{}
+	// fmt.Println("workercall start")
 	ok := call("Coordinator.HandleRequest", &response_args, &response_reply)
 	return response_reply, ok
 }

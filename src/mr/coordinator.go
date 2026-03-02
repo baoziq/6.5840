@@ -36,6 +36,7 @@ type Coordinator struct {
 	map_count         int
 	reduce_count      int
 	mu                sync.Mutex
+	ret               bool
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -61,7 +62,8 @@ func (c *Coordinator) reduce_timeout(id int) {
 func (c *Coordinator) HandleRequest(args *RequestTaskArgs, reply *RequestTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	fmt.Println("start handle")
+	// fmt.Printf("map_count: %d\n", c.map_count)
+	// fmt.Printf("len(map_task): %d\n", len(c.map_task))
 	if c.map_count == len(c.map_task) {
 		c.mapAllFinished = true
 	}
@@ -74,11 +76,14 @@ func (c *Coordinator) HandleRequest(args *RequestTaskArgs, reply *RequestTaskRep
 		reply.Type = ExitTask
 		return nil
 	}
+
 	// 有map任务
 	if !c.mapAllFinished {
-		for index, file := range c.map_task {
+		n := len(c.map_task)
+		for index := 0; index < n; index++ {
+			file := c.map_task[index]
 			if file.status == waiting {
-				file.status = started
+				c.map_task[index].status = started
 				reply.FileName = file.filename
 				reply.MapId = index
 				reply.NReduce = c.NReduce
@@ -88,27 +93,28 @@ func (c *Coordinator) HandleRequest(args *RequestTaskArgs, reply *RequestTaskRep
 				content, _ := io.ReadAll(ofile)
 				ofile.Close()
 				reply.Content = string(content)
-				c.map_timeout(index)
+				// c.map_timeout(index)
 				return nil
 			}
 		}
+		// fmt.Println("map task has distributed")
 		reply.Type = WaitTask
 		return nil
 	}
-	fmt.Println("start1 handle")
+	// mt.Println("start1 handle")
 	// 分配reduce任务
-	for index, task := range c.reduce_task {
-		if task == waiting {
-			task = started
+	n := c.NReduce
+	for index := 0; index < n; index++ {
+		if c.reduce_task[index] == waiting {
+			c.reduce_task[index] = started
 			reply.ReduceId = index
 			reply.MapSum = len(c.map_task)
 			reply.Type = ReduceTask
-			c.reduce_timeout(index)
+			// c.reduce_timeout(index)
 			return nil
 		}
 		reply.Type = WaitTask
 	}
-
 	return nil
 }
 
@@ -117,12 +123,12 @@ func (c *Coordinator) HandleReport(args *ReportTaskArgs, reply *ReportTaskReply)
 	defer c.mu.Unlock()
 	switch args.Type {
 	case MapTask:
-		if args.Result {
+		if args.Result && c.map_task[args.Id].status == started {
 			c.map_count++
 			c.map_task[args.Id].status = finished
 		}
 	case ReduceTask:
-		if args.Result {
+		if args.Result && c.reduce_task[args.Id] == started {
 			c.reduce_count++
 			c.reduce_task[args.Id] = finished
 		}
@@ -145,14 +151,14 @@ func (c *Coordinator) server(sockname string) {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	// Your code here.
 	if c.mapAllFinished && c.reduceAllFinished {
-		ret = true
+		c.ret = true
 	}
 
-	return ret
+	return c.ret
 }
 
 // create a Coordinator.
@@ -162,13 +168,13 @@ func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator 
 	c := Coordinator{}
 
 	// Your code here.
-	fmt.Println("start")
+	// fmt.Println("start")
+	fmt.Printf("len(file): %d\n", len(files))
 	c.map_task = make([]mapTask, len(files))
 	for index, file := range files {
 		c.map_task[index].filename = file
 		c.map_task[index].status = waiting
 	}
-
 	c.reduce_task = make([]Status, nReduce)
 	for i := 0; i < nReduce; i++ {
 		c.reduce_task[i] = waiting
@@ -179,7 +185,7 @@ func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator 
 	c.mapAllFinished = false
 	c.map_count = 0
 	c.reduce_count = 0
-
+	c.ret = false
 	c.server(sockname)
 	return &c
 }
