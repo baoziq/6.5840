@@ -1,8 +1,6 @@
 package mr
 
 import (
-	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -85,15 +83,12 @@ func (c *Coordinator) HandleRequest(args *RequestTaskArgs, reply *RequestTaskRep
 			if file.status == waiting {
 				c.map_task[index].status = started
 				reply.FileName = file.filename
+				// fmt.Printf("filename: %s\n", file.filename)
 				reply.MapId = index
 				reply.NReduce = c.NReduce
 				reply.Type = MapTask
 				reply.MapSum = len(c.map_task)
-				ofile, _ := os.Open(file.filename)
-				content, _ := io.ReadAll(ofile)
-				ofile.Close()
-				reply.Content = string(content)
-				// c.map_timeout(index)
+				go c.map_timeout(index)
 				return nil
 			}
 		}
@@ -110,7 +105,7 @@ func (c *Coordinator) HandleRequest(args *RequestTaskArgs, reply *RequestTaskRep
 			reply.ReduceId = index
 			reply.MapSum = len(c.map_task)
 			reply.Type = ReduceTask
-			// c.reduce_timeout(index)
+			go c.reduce_timeout(index)
 			return nil
 		}
 		reply.Type = WaitTask
@@ -169,7 +164,7 @@ func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator 
 
 	// Your code here.
 	// fmt.Println("start")
-	fmt.Printf("len(file): %d\n", len(files))
+	// fmt.Printf("len(file): %d\n", len(files))
 	c.map_task = make([]mapTask, len(files))
 	for index, file := range files {
 		c.map_task[index].filename = file

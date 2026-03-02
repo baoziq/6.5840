@@ -52,16 +52,23 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 		}
 		switch task.Type {
 		case MapTask:
-			kva := mapf(task.FileName, task.Content)
+			contentBytes, err := os.ReadFile(task.FileName)
+			if err != nil {
+				log.Fatalf("cannot read %v", task.FileName)
+			}
+			kva := mapf(task.FileName, string(contentBytes))
+			// fmt.Printf("len(kva): %d\n", len(kva))
 			buckets := make([][]KeyValue, task.NReduce)
-			// fmt.Printf("bucket's len: %d\n", len(buckets))
 			for _, kv := range kva {
 				index := ihash(kv.Key) % task.NReduce
 				buckets[index] = append(buckets[index], kv)
 			}
 			for i := 0; i < task.NReduce; i++ {
 				filename := fmt.Sprintf("mr-%d-%d", task.MapId, i)
-				ofile, _ := os.Create(filename)
+				ofile, err := os.Create(filename)
+				if err != nil {
+					log.Fatalf("cannot create %v", filename)
+				}
 				enc := json.NewEncoder(ofile)
 				for _, kv := range buckets[i] {
 					enc.Encode(&kv)
@@ -79,9 +86,11 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 			kva := []KeyValue{}
 			for i := 0; i < task.MapSum; i++ {
 				filename := fmt.Sprintf("mr-%d-%d", i, task.ReduceId)
-				ofile, _ := os.Open(filename)
+				ofile, err := os.Open(filename)
+				if err != nil {
+					log.Fatalf("cannot read %v", filename)
+				}
 				dec := json.NewDecoder(ofile)
-
 				for {
 					var kv KeyValue
 					if err := dec.Decode(&kv); err != nil {
@@ -89,8 +98,14 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 					}
 					kva = append(kva, kv)
 				}
+				ofile.Close()
 			}
 			sort.Sort(ByKey(kva))
+			oname := fmt.Sprintf("mr-out-%d", task.ReduceId)
+			ofile, err := os.Create(oname)
+			if err != nil {
+				log.Fatalf("cannot create %s", oname)
+			}
 			i := 0
 			for i < len(kva) {
 				j := i + 1
@@ -102,11 +117,10 @@ func Worker(sockname string, mapf func(string, string) []KeyValue,
 					values = append(values, kva[k].Value)
 				}
 				output := reducef(kva[i].Key, values)
-				oname := fmt.Sprintf("mr-out-%d", task.ReduceId)
-				ofile, _ := os.Create(oname)
 				fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
 				i = j
 			}
+			ofile.Close()
 			report_args := ReportTaskArgs{}
 			report_reply := ReportTaskReply{}
 			report_args.Type = ReduceTask

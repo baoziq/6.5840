@@ -25,7 +25,6 @@ type RequestTaskReply struct {
 	MapId    int
 	Type     TaskType
 	FileName string
-	Content  string
 	ReduceId int
 	MapSum   int
 }
