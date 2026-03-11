@@ -1,7 +1,7 @@
 package lock
 
 import (
-	"6.5840/kvtest1"
+	kvtest "6.5840/kvtest1"
 )
 
 type Lock struct {
@@ -11,6 +11,8 @@ type Lock struct {
 	// MakeLock().
 	ck kvtest.IKVClerk
 	// You may add code here
+	name string
+	id   string
 }
 
 // The tester calls MakeLock() and passes in a k/v clerk; your code can
@@ -22,13 +24,25 @@ type Lock struct {
 func MakeLock(ck kvtest.IKVClerk, lockname string) *Lock {
 	lk := &Lock{ck: ck}
 	// You may add code here
+	lk.name = lockname
+	lk.id = ""
+	lk.ck.Put(lk.name, lk.id, 0)
 	return lk
 }
 
 func (lk *Lock) Acquire() {
 	// Your code here
+	for {
+		tmp_id, _, _ := lk.ck.Get(lk.name)
+		if tmp_id == "" {
+			lk.id = kvtest.RandValue(8)
+
+		}
+	}
+
 }
 
 func (lk *Lock) Release() {
 	// Your code here
+
 }
