@@ -64,11 +64,14 @@ var KvModel = porcupine.Model{
 		default:
 			return false, "<invalid>"
 		}
-	},
-	DescribeOperation: func(input, output interface{}) string {
-		inp := input.(KvInput)
-		out := output.(KvOutput)
-		switch inp.Op {
+		},
+		DescribeOperation: func(input, output interface{}) string {
+			if input == nil || output == nil {
+				return "<pending>"
+			}
+			inp := input.(KvInput)
+			out := output.(KvOutput)
+			switch inp.Op {
 		case 0:
 			return fmt.Sprintf("get('%s') -> ('%s', '%d', '%s')", inp.Key, out.Value, out.Version, out.Err)
 		case 1:

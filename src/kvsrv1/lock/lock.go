@@ -1,7 +1,9 @@
 package lock
 
 import (
+	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
+	"time"
 )
 
 type Lock struct {
@@ -26,23 +28,74 @@ func MakeLock(ck kvtest.IKVClerk, lockname string) *Lock {
 	// You may add code here
 	lk.name = lockname
 	lk.id = ""
-	lk.ck.Put(lk.name, lk.id, 0)
 	return lk
 }
 
 func (lk *Lock) Acquire() {
-	// Your code here
 	for {
-		tmp_id, _, _ := lk.ck.Get(lk.name)
-		if tmp_id == "" {
-			lk.id = kvtest.RandValue(8)
-
+		val, version, err := lk.ck.Get(lk.name)
+		if lk.id != "" && val == lk.id {
+			return
 		}
+		if err == rpc.ErrNoKey {
+			if lk.id == "" {
+				lk.id = kvtest.RandValue(8)
+				}
+				status := lk.ck.Put(lk.name, lk.id, 0)
+				if status == rpc.OK {
+					return
+				}
+				if status != rpc.ErrMaybe {
+					lk.id = ""
+				}
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			if val == "" {
+				if lk.id == "" {
+					lk.id = kvtest.RandValue(8)
+				}
+				status := lk.ck.Put(lk.name, lk.id, version)
+				if status == rpc.OK {
+					return
+				}
+				if status != rpc.ErrMaybe {
+					lk.id = ""
+				}
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+
 	}
 
-}
-
 func (lk *Lock) Release() {
-	// Your code here
-
+	for {
+		val, version, err := lk.ck.Get(lk.name)
+		if err == rpc.ErrNoKey {
+			lk.id = ""
+			return
+		}
+		if val == "" {
+			lk.id = ""
+			return
+		}
+		if val == lk.id {
+			status := lk.ck.Put(lk.name, "", version)
+			if status == rpc.OK {
+				lk.id = ""
+				return
+			}
+			if status == rpc.ErrMaybe {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		// If the lock is held by someone else, this clerk does not own it.
+		lk.id = ""
+		return
+	}
 }

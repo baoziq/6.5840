@@ -45,7 +45,7 @@ func (log *OpLog) Read() []porcupine.Operation {
 // absolute timestamps with `time.Now().UnixNano()` (which uses the wall
 // clock), we measure time relative to `t0` using `time.Since(t0)`, which uses
 // the monotonic clock
-var t0 = time.Unix(0, 0)
+var t0 = time.Now()
 
 func Get(cfg *tester.Config, ck IKVClerk, key string, log *OpLog, cli int) (string, rpc.Tversion, rpc.Err) {
 	start := int64(time.Since(t0))
