@@ -14,6 +14,7 @@ import (
 	"time"
 
 	//	"6.5840/labgob"
+
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	tester "6.5840/tester1"
@@ -60,6 +61,8 @@ type Raft struct {
 	leader         Leader
 	role           Role
 	lastActiveTime time.Time
+	serverSum      int
+	receiveNum     int
 }
 
 // return currentTerm and whether this server
@@ -69,6 +72,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
+	term = rf.persistent.currentTerm
+	isleader = rf.isLeader()
 	return term, isleader
 }
 
@@ -161,6 +166,29 @@ type AppendEntriesReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	args.Term = rf.persistent.currentTerm
+	args.CandidateId = rf.persistent.votedFor
+	for serverId := 0; serverId < rf.serverSum; serverId++ {
+		ok := rf.sendRequestVote(serverId, args, reply)
+		if !ok {
+			continue
+		}
+		if reply.Term > rf.persistent.currentTerm {
+			rf.role = follower
+		}
+
+		if reply.VoteGranted {
+			rf.receiveNum++
+		}
+	}
+	if args.Term < rf.persistent.currentTerm {
+		reply.Term = rf.persistent.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+	rf.persistent.votedFor = args.CandidateId
+	reply.Term = rf.persistent.currentTerm
+	reply.VoteGranted = true
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -195,6 +223,19 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) AppendEntriesVote(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	for serverId := 0; serverId < rf.serverSum; serverId++ {
+		ok := rf.sendAppendEntries(serverId, args, reply)
+		if !ok {
+			continue
+		}
+	}
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	return rf.peers[server].Call("Rafr.AppendEntriesVote", args, reply)
+}
+
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -216,15 +257,49 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-func (rf *Raft) getTimeout() time.Time {
-	return 300 + rand()
+func (rf *Raft) isLeader() bool {
+	return rf.receiveNum > rf.serverSum/2+1
 }
+
+func (rf *Raft) startElection() {
+	if rf.role == follower {
+		rf.role = candidate
+		rf.persistent.currentTerm++
+		rf.persistent.votedFor = rf.persistent.currentTerm
+		args := RequestVoteArgs{}
+		reply := RequestVoteReply{}
+
+		rf.RequestVote(&args, &reply)
+		return
+	}
+	// candidate
+	if rf.isLeader() {
+		rf.role = leader
+		args := AppendEntriesArgs{}
+		reply := AppendEntriesReply{}
+		rf.AppendEntriesVote(&args, &reply)
+		return
+	}
+
+}
+
+func (rf *Raft) getTimeout() time.Duration {
+	// return 300 + rand()
+	n := rand.Intn(300)
+	return time.Duration(n)*time.Millisecond + 300*time.Millisecond
+}
+
 func (rf *Raft) ticker() {
 	for true {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
-
+		timeout := rf.getTimeout()
+		if time.Since(rf.lastActiveTime) >= timeout {
+			if rf.role != leader {
+				rf.startElection()
+			}
+		}
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
