@@ -10,7 +10,6 @@ package raft
 import (
 	//	"bytes"
 	"math/rand"
-	"slices"
 	"sync"
 	"time"
 
@@ -190,22 +189,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// 一致性检查
-	index := args.LastLogIndex
+	// index := args.LastLogIndex
 	cur_term := args.LastLogTerm
-	if len(rf.log)-1 < index {
+
+	myIndex := len(rf.log) - 1
+	myTerm := rf.log[myIndex].Term
+
+	if myTerm >= cur_term {
 		return
 	}
-
-	if rf.log[index].Term != cur_term {
-		return
-	}
-
 	if rf.vodtedFor == -1 || rf.vodtedFor == args.CandidateId {
 		rf.vodtedFor = args.CandidateId
 		rf.lastResetElectionTime = time.Now()
 		reply.VoteGranted = true
-	} else {
-		reply.VoteGranted = false
 	}
 
 }
@@ -253,14 +249,8 @@ func (rf *Raft) AppendEntriesVote(args *AppendEntriesArgs, reply *AppendEntriesR
 		return
 
 	}
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.vodtedFor = -1
-		rf.role = follower
-		rf.lastResetElectionTime = time.Now()
-	}
 	// 一致性检查
-	if len(rf.log)+1 < args.PrevLogIndex {
+	if len(rf.log) <= args.PrevLogIndex {
 		reply.Success = false
 		return
 	}
@@ -268,9 +258,15 @@ func (rf *Raft) AppendEntriesVote(args *AppendEntriesArgs, reply *AppendEntriesR
 		reply.Success = false
 		return
 	}
+	// 转follower
+	rf.currentTerm = args.Term
+	rf.vodtedFor = -1
+	rf.role = follower
+	rf.lastResetElectionTime = time.Now()
+
 	// 添加日志
 	for i, entry := range args.Entries {
-		resIndex := args.PrevLogIndex + i
+		resIndex := args.PrevLogIndex + i + 1
 		if resIndex < len(rf.log) {
 			if rf.log[resIndex].Term != entry.Term {
 				rf.log = rf.log[:resIndex]
@@ -299,22 +295,27 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (3B).
-	term, isLeader = rf.GetState()
-	if isLeader {
-		newLogEntry := LogEntry{
-			Term:    rf.currentTerm,
-			Command: command,
-		}
-		rf.log = append(rf.log, newLogEntry)
-		index = len(rf.log) - 1
-		rf.broadcastHeartbeat()
+	rf.mu.Lock()
+	if rf.role != leader {
+		return -1, rf.currentTerm, false
 	}
-	return index, term, isLeader
+	term := rf.currentTerm
+	newLogEntry := LogEntry{
+		Term:    term,
+		Command: command,
+	}
+	rf.log = append(rf.log, newLogEntry)
+	index := len(rf.log) - 1
+	rf.matchIndex[rf.me] = index
+	rf.nextIndex[rf.me] = index + 1
+	rf.mu.Unlock()
+
+	// 异步？
+	rf.broadcastHeartbeat()
+
+	return index, term, true
+
 }
 
 func (rf *Raft) startElection() {
@@ -331,11 +332,14 @@ func (rf *Raft) startElection() {
 			continue
 		}
 		go func(server int) {
+			lastLogIndex := len(rf.log) - 1
+			lastLogTerm := rf.log[lastLogIndex].Term
+
 			args := RequestVoteArgs{
 				Term:         termStarted,
 				CandidateId:  rf.me,
-				LastLogIndex: 0,
-				LastLogTerm:  0,
+				LastLogIndex: lastLogIndex,
+				LastLogTerm:  lastLogTerm,
 			}
 			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(server, &args, &reply)
@@ -360,8 +364,9 @@ func (rf *Raft) startElection() {
 					rf.role = leader
 					// 把所有server的nextIndex和matchIndex都初始化
 					for tmp := range rf.peers {
-						rf.nextIndex[tmp] = len(rf.log) - 1
+						rf.nextIndex[tmp] = len(rf.log)
 						rf.matchIndex[tmp] = 0
+						rf.matchIndex[rf.me] = len(rf.log) - 1
 					}
 
 				}
@@ -373,11 +378,18 @@ func (rf *Raft) startElection() {
 }
 
 func (rf *Raft) updateCommitIndex() {
-	arr := rf.matchIndex
-	slices.Sort(arr)
-	index := len(rf.peers) / 2
-
-	rf.commitIndex = arr[index]
+	for N := len(rf.log) - 1; N >= rf.commitIndex+1; N-- {
+		sum := 0
+		for server := range rf.matchIndex {
+			if server >= N {
+				sum++
+			}
+		}
+		if N >= len(rf.peers)/2 && rf.log[N].Term == rf.currentTerm {
+			rf.commitIndex = N
+			break
+		}
+	}
 }
 
 func (rf *Raft) applyCommittedEntries() {
@@ -515,6 +527,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastResetElectionTime = time.Now()
 	rf.vodtedFor = -1 // 没有投票
 	rf.applyChan = applyCh
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
+	rf.log = make([]LogEntry, 0)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
