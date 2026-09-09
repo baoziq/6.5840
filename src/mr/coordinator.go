@@ -6,33 +6,119 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
+	"time"
 )
+
+type TaskStatus int
+
+const (
+	Idle TaskStatus = iota
+	Running
+	Finished
+)
+
+type MapTask struct {
+	filename  string
+	taskId    int
+	status    TaskStatus
+	startTime time.Time
+}
+
+type ReduceTask struct {
+	taskId    int
+	status    TaskStatus
+	startTime time.Time
+}
 
 type Coordinator struct {
 	// Your definitions here.
-	fileSize        int
-	mapFinishSum    int
-	reduceFinishSum int
-	nReduce         int
+	fileSize int
+	nReduce  int
+	mu       sync.Mutex
+	mTask    []MapTask
+	rTask    []ReduceTask
 }
 
-// Your code here -- RPC handlers for the worker to call.
-
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *Args, reply *Reply) error {
-	if c.mapFinishSum != c.fileSize {
-		reply.nReduce = c.nReduce
+func (c *Coordinator) mapFinishedSum() int {
+	sum := 0
+	for _, item := range c.mTask {
+		if item.status == Finished {
+			sum++
+		}
 	}
+	return sum
+}
+
+func (c *Coordinator) reduceFinishedSum() int {
+	sum := 0
+	for _, item := range c.rTask {
+		if item.status == Finished {
+			sum++
+		}
+	}
+	return sum
+}
+
+func (c *Coordinator) mapDone() bool {
+	return c.mapFinishedSum() == c.fileSize
+}
+
+func (c *Coordinator) reduceDone() bool {
+	return c.reduceFinishedSum() == c.nReduce
+}
+
+func (c *Coordinator) Example(args *Args, reply *Reply) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.mapDone() && c.reduceDone() {
+		reply.Task = Finish
+		return nil
+	}
+	if !c.mapDone() {
+		for i := 0; i < c.fileSize; i++ {
+			if c.mTask[i].status == Running && time.Since(c.mTask[i].startTime) > 10*time.Second {
+				c.mTask[i].status = Idle
+			}
+			if c.mTask[i].status == Idle {
+				reply.Filename = c.mTask[i].filename
+				reply.TaskId = i
+				reply.Task = Map
+				reply.NReduce = c.nReduce
+				c.mTask[i].status = Running
+				c.mTask[i].startTime = time.Now()
+				return nil
+			}
+		}
+		reply.Task = Waiting
+		return nil
+	}
+	for i := 0; i < c.nReduce; i++ {
+		if c.rTask[i].status == Running && time.Since(c.rTask[i].startTime) > 10*time.Second {
+			c.rTask[i].status = Idle
+		}
+		if c.rTask[i].status == Idle {
+			reply.NReduce = c.nReduce
+			reply.TaskId = i
+			reply.Task = Reduce
+			reply.FileSize = c.fileSize
+			c.rTask[i].status = Running
+			c.rTask[i].startTime = time.Now()
+			return nil
+		}
+	}
+	reply.Task = Waiting
 	return nil
 }
+
 func (c *Coordinator) Finish(args *FinishArgs, reply *FinishReply) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if args.Task == Map {
-		c.mapFinishSum++
-	} else {
-		c.reduceFinishSum++
+		c.mTask[args.TaskId].status = Finished
+		return nil
 	}
+	c.rTask[args.TaskId].status = Finished
 	return nil
 }
 
@@ -51,13 +137,9 @@ func (c *Coordinator) server(sockname string) {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-	if c.reduceFinishSum == c.nReduce {
-		ret = true
-	}
-	return ret
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.mapDone() && c.reduceDone()
 }
 
 // create a Coordinator.
@@ -68,10 +150,18 @@ func MakeCoordinator(sockname string, files []string, nReduce int) *Coordinator 
 
 	// Your code here.
 	c.fileSize = len(files)
-	c.mapFinishSum = 0
 	c.nReduce = nReduce
-	c.reduceFinishSum = 0
-
+	c.mTask = make([]MapTask, c.fileSize)
+	for i := 0; i < c.fileSize; i++ {
+		c.mTask[i].filename = files[i]
+		c.mTask[i].status = Idle
+		c.mTask[i].taskId = i
+	}
+	c.rTask = make([]ReduceTask, nReduce)
+	for i := 0; i < c.nReduce; i++ {
+		c.rTask[i].status = Idle
+		c.rTask[i].taskId = i
+	}
 	c.server(sockname)
 	return &c
 }

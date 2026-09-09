@@ -14,6 +14,7 @@ const (
 	Map TaskType = iota
 	Reduce
 	Finish
+	Waiting
 )
 
 // Add your RPC definitions here.
@@ -24,12 +25,14 @@ type Args struct {
 type Reply struct {
 	Task     TaskType
 	Filename string
-	MapNo    int
-	nReduce  int
+	TaskId   int
+	NReduce  int
+	FileSize int
 }
 
 type FinishArgs struct {
-	Task TaskType
+	Task   TaskType
+	TaskId int
 }
 
 type FinishReply struct {
