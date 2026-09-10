@@ -6,7 +6,7 @@ import (
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
 const Debug = false
@@ -18,16 +18,21 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
+type Value struct {
+	value   string
+	version rpc.Tversion
+}
 type KVServer struct {
 	mu sync.Mutex
 
 	// Your definitions here.
+	m map[string]Value
 }
 
 func MakeKVServer() *KVServer {
 	kv := &KVServer{}
 	// Your code here.
+	kv.m = make(map[string]Value)
 	return kv
 }
 
@@ -35,6 +40,16 @@ func MakeKVServer() *KVServer {
 // exists. Otherwise, Get returns ErrNoKey.
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	val, ok := kv.m[args.Key]
+	if !ok {
+		reply.Err = rpc.ErrNoKey
+		return
+	}
+	reply.Value = val.value
+	reply.Version = val.version
+	reply.Err = rpc.OK
 }
 
 // Update the value for a key if args.Version matches the version of
@@ -43,9 +58,33 @@ func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {
 // args.Version is 0, and returns ErrNoKey otherwise.
 func (kv *KVServer) Put(args *rpc.PutArgs, reply *rpc.PutReply) {
 	// Your code here.
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	val, ok := kv.m[args.Key]
+	reply.Err = rpc.OK
+	if !ok {
+		// log.Printf("debug: \n")
+		if args.Version != 0 {
+			reply.Err = rpc.ErrNoKey
+			return
+		}
+		args.Version++
+		tmp_val := Value{
+			value:   args.Value,
+			version: args.Version,
+		}
+		kv.m[args.Key] = tmp_val
+		return
+	}
+	if args.Version != val.version {
+		reply.Err = rpc.ErrVersion
+		return
+	}
+	val.value = args.Value
+	val.version++
+	kv.m[args.Key] = val
+
 }
-
-
 
 // You can ignore all arguments; they are for replicated KVservers
 func StartKVServer(tc *tester.TesterClnt, ends []*labrpc.ClientEnd, gid tester.Tgid, srv int, persister *tester.Persister) []any {
