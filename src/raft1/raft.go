@@ -277,7 +277,7 @@ func (rf *Raft) startElection() {
 	rf.role = CANDIDATE
 	rf.currentTerm++
 	rf.votedFor = rf.me
-	curTerm := rf.currentTerm
+	// curTerm := rf.currentTerm
 	rf.lastActiveTime = time.Now()
 	// ch := make(chan VoteResult, len(rf.peers)-1)
 	args := RequestVoteArgs{
@@ -315,10 +315,10 @@ func (rf *Raft) startElection() {
 			}
 
 			// 这个 RPC reply 已经过期
-			if curTerm != rf.currentTerm || rf.role != CANDIDATE {
-				rf.mu.Unlock()
-				return
-			}
+			// if curTerm != rf.currentTerm || rf.role != CANDIDATE {
+			// 	rf.mu.Unlock()
+			// 	return
+			// }
 
 			if reply.VoteGranted {
 				votes++
