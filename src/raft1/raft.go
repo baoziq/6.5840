@@ -10,12 +10,14 @@ package raft
 import (
 	//	"bytes"
 
+	"bytes"
 	"math/rand"
 	"sort"
 	"sync"
 	"time"
 
 	//	"6.5840/labgob"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raftapi"
 	tester "6.5840/tester1"
@@ -80,13 +82,13 @@ func (rf *Raft) GetState() (int, bool) {
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
 	// Your code here (3C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	raftstate := w.Bytes()
+	rf.persister.Save(raftstate, nil)
 }
 
 // restore previously persisted state.
@@ -94,19 +96,21 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (3C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []Log
+	if d.Decode(&currentTerm) != nil ||
+		d.Decode(&votedFor) != nil ||
+		d.Decode(&log) != nil {
+		// error
+	} else {
+		rf.currentTerm = currentTerm
+		rf.votedFor = votedFor
+		rf.log = append([]Log(nil), log...)
+	}
+
 }
 
 // how many bytes in Raft's persisted log?
@@ -181,6 +185,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// reply.VoteGranted = true
 		reply.Term = rf.currentTerm
 		// log.Printf("candidate %v's Term > %v's Term, vote\n", args.CandidateId, rf.me)
+		rf.persist()
 	}
 	myLastIndex := len(rf.log) - 1
 	myLastTerm := rf.log[myLastIndex].Term
@@ -188,6 +193,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	canVote := rf.votedFor == -1 || rf.votedFor == args.CandidateId
 	if canVote && upToDate {
 		rf.votedFor = args.CandidateId
+		rf.persist()
 		reply.VoteGranted = true
 	}
 }
@@ -209,7 +215,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.role = FOLLOWER
 		rf.votedFor = -1
 		// log.Printf("server %v has received %v's AppendEntries and become follower\nserver %v's term is %v, args's term is %v", rf.me, args.LeaderId, rf.me, rf.currentTerm, args.Term)
-
+		rf.persist()
 	}
 
 	// log.Printf("server %v receive AppendEntries from server %v\n args.PrevLogIndex is %v, args.PrevLogTerm is %v", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm)
@@ -240,6 +246,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			break
 		}
 	}
+	rf.persist()
 	if args.LeaderCommit > rf.commitIndex {
 		// log.Printf("args.LeaderCommit %v > rf.commitIndex %v", args.LeaderCommit, rf.commitIndex)
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
@@ -316,6 +323,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		}
 		rf.log = append(rf.log, entry)
 		isLeader = true
+		rf.persist()
 	}
 	// log.Printf("leader %v's log is %v\n", rf.me, rf.log)
 	return index, term, isLeader
@@ -326,6 +334,7 @@ func (rf *Raft) startElection() {
 	rf.role = CANDIDATE
 	rf.currentTerm++
 	rf.votedFor = rf.me
+	rf.persist()
 	// curTerm := rf.currentTerm
 	rf.lastActiveTime = time.Now()
 	// curMe := rf.me
@@ -363,6 +372,7 @@ func (rf *Raft) startElection() {
 				rf.currentTerm = reply.Term
 				rf.role = FOLLOWER
 				rf.votedFor = -1
+				rf.persist()
 				rf.mu.Unlock()
 				return
 			}
@@ -437,6 +447,7 @@ func (rf *Raft) heartbeat() {
 				rf.role = FOLLOWER
 				rf.votedFor = -1
 				rf.currentTerm = reply.Term
+				rf.persist()
 				rf.mu.Unlock()
 				return
 			}
@@ -533,6 +544,7 @@ func (rf *Raft) checkFollower() {
 						rf.currentTerm = reply.Term
 						rf.role = FOLLOWER
 						rf.votedFor = -1
+						rf.persist()
 						// log.Printf("server %v receive server %v's reply, reply's Term is %v, curTerm is %v\n", rf.me, i, reply.Term, rf.currentTerm)
 						rf.mu.Unlock()
 						return
