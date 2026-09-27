@@ -541,6 +541,12 @@ func (rf *Raft) checkFollower() {
 						rf.mu.Unlock()
 						return
 					}
+					// Ignore replies for an older nextIndex. Another replication
+					// goroutine may have already changed this peer's progress.
+					if rf.nextIndex[i] != curLogIndex {
+						rf.mu.Unlock()
+						continue
+					}
 					// log.Printf("leader is %v, follower is %v receive reply is %v", rf.me, i, reply.Success)
 					if reply.Success {
 						rf.matchIndex[i] = args.PrevLogIndex + len(args.Entries)
@@ -550,9 +556,10 @@ func (rf *Raft) checkFollower() {
 						return
 					}
 					// log.Printf("retry\n")
-					if rf.nextIndex[i] > 1 {
-						rf.nextIndex[i]--
-					}
+					// if rf.nextIndex[i] > 1 {
+					// 	rf.nextIndex[i]--
+					// }
+					rf.nextIndex[i]--
 					rf.mu.Unlock()
 				}
 			}(i)
