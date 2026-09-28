@@ -159,6 +159,9 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int // current term
 	Success bool
+	XLen    int // log lenght
+	XTerm   int // term in conflict log
+	XIndex  int // index of first entry with Xterm
 }
 
 type VoteResult struct {
@@ -217,7 +220,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// log.Printf("server %v has received %v's AppendEntries and become follower\nserver %v's term is %v, args's term is %v", rf.me, args.LeaderId, rf.me, rf.currentTerm, args.Term)
 		rf.persist()
 	}
-
+	reply.XLen = len(rf.log)
 	// log.Printf("server %v receive AppendEntries from server %v\n args.PrevLogIndex is %v, args.PrevLogTerm is %v", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm)
 	if args.PrevLogIndex >= len(rf.log) {
 		reply.Success = false
@@ -225,19 +228,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
-		// log.Printf("server %v receive AppendEntries from server %v\n args.PrevLogIndex is %v, args.PrevLogTerm is %v", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm)
-		// log.Printf("rf.log[args.PrevLogIndex].Term != args.PrevLogTerm\n")
+		reply.XTerm = rf.log[args.PrevLogIndex].Term
+		tmpIndex := args.PrevLogIndex
+		for true {
+			if rf.log[tmpIndex].Term != reply.XTerm {
+				break
+			}
+			tmpIndex--
+		}
+		reply.XIndex = tmpIndex
 		return
 	}
-	// log.Printf("For server %v, args.LeaderCommit is %v, rf.commitIndex is %v\n", rf.me, args.LeaderCommit, rf.commitIndex)
-
-	// log.Printf("reply is Success\n")
-	// log.Printf("args.Entries is %v", args.Entries)
 	for i := 0; i < len(args.Entries); i++ {
 		cur := i + args.PrevLogIndex + 1
 		if len(rf.log) == cur {
 			rf.log = append(rf.log, args.Entries[i:]...)
-			// log.Printf("follower %v's log is %v", rf.me, rf.log)
 			break
 		}
 		if rf.log[cur].Term != args.Entries[i].Term {
@@ -338,7 +343,7 @@ func (rf *Raft) startElection() {
 	// curTerm := rf.currentTerm
 	rf.lastActiveTime = time.Now()
 	// curMe := rf.me
-	// curTerm := rf.currentTerm
+	curTerm := rf.currentTerm
 	// ch := make(chan VoteResult, len(rf.peers)-1)
 	args := RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -377,7 +382,7 @@ func (rf *Raft) startElection() {
 				return
 			}
 
-			if reply.VoteGranted && rf.role == CANDIDATE {
+			if reply.VoteGranted && rf.role == CANDIDATE && rf.currentTerm == curTerm {
 				votes++
 				if votes > len(rf.peers)/2 {
 					rf.role = LEADER
@@ -516,10 +521,12 @@ func (rf *Raft) checkFollower() {
 			rf.mu.Unlock()
 			go func(i int) {
 				for {
+					rf.mu.Lock()
 					if rf.role != LEADER {
+						rf.mu.Unlock()
 						return
 					}
-					rf.mu.Lock()
+
 					curLogIndex := rf.nextIndex[i]
 					// log.Printf("server %v is leader now, curLogIndex is %v, send to follower %v, leader's commitIndex is %v\n", curMe, curLogIndex, i, rf.commitIndex)
 					args := AppendEntriesArgs{
@@ -527,7 +534,7 @@ func (rf *Raft) checkFollower() {
 						LeaderId:     rf.me,
 						PrevLogIndex: curLogIndex - 1,
 						PrevLogTerm:  rf.log[curLogIndex-1].Term,
-						Entries:      rf.log[curLogIndex:],
+						Entries:      append([]Log(nil), rf.log[curLogIndex:]...),
 						LeaderCommit: rf.commitIndex,
 					}
 					reply := AppendEntriesReply{}
@@ -571,7 +578,21 @@ func (rf *Raft) checkFollower() {
 					// if rf.nextIndex[i] > 1 {
 					// 	rf.nextIndex[i]--
 					// }
-					rf.nextIndex[i]--
+					if reply.XLen < rf.nextIndex[i] {
+						rf.nextIndex[i] = reply.XLen
+					} else {
+						pos := sort.Search(len(rf.log), func(i int) bool {
+							return rf.log[i].Term > reply.XTerm
+						})
+						index := pos - 1
+						if index >= 0 && rf.log[index].Term == reply.XTerm {
+							rf.nextIndex[i] = index + 1
+						} else {
+							rf.nextIndex[i] = reply.XIndex
+						}
+					}
+					// rf.nextIndex[i]--
+
 					rf.mu.Unlock()
 				}
 			}(i)
@@ -601,7 +622,6 @@ func (rf *Raft) applier() {
 		// log.Printf("server %v before send applyCh", rf.me)
 		rf.applyCh <- msg
 		// log.Printf("server %v after send applyCh", rf.me)
-		time.Sleep(10 * time.Millisecond)
 	}
 
 }
