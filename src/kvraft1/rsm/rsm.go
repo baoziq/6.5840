@@ -129,8 +129,8 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 			return rpc.OK, result.Req
 
 		case <-ticker.C:
-			currentTerm, _ := rsm.rf.GetState()
-			if currentTerm != term {
+			currentTerm, isLeader := rsm.rf.GetState()
+			if currentTerm != term || !isLeader {
 				return rpc.ErrWrongLeader, nil
 			}
 		}
@@ -147,12 +147,15 @@ func (rsm *RSM) Reader() {
 		rsm.mu.Lock()
 		ch, ok := rsm.waiting[msg.CommandIndex]
 		if ok {
+			delete(rsm.waiting, msg.CommandIndex)
+		}
+		rsm.mu.Unlock()
+		if ok {
 			ch <- OpRes{
 				Id:  op.Id,
 				Req: result,
 			}
 		}
-		rsm.mu.Unlock()
 	}
 }
 

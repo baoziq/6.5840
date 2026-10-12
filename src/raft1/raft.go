@@ -269,19 +269,25 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.XIndex = tmpIndex
 		return
 	}
+	logChanged := false
 	for i := 0; i < len(args.Entries); i++ {
 		cur := i + args.PrevLogIndex + 1
 		if len(rf.log)+rf.logBastIndex == cur {
 			rf.log = append(rf.log, args.Entries[i:]...)
+			logChanged = true
 			break
 		}
 		if rf.log[cur-rf.logBastIndex].Term != args.Entries[i].Term {
 			rf.log = rf.log[:cur-rf.logBastIndex]
 			rf.log = append(rf.log, args.Entries[i:]...)
+			logChanged = true
 			break
 		}
 	}
-	rf.persist()
+	// Heartbeats and duplicate entries do not change persistent state.
+	if logChanged {
+		rf.persist()
+	}
 	if args.LeaderCommit > rf.commitIndex {
 		// log.Printf("args.LeaderCommit %v > rf.commitIndex %v", args.LeaderCommit, rf.commitIndex)
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1+rf.logBastIndex)
