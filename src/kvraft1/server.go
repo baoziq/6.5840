@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"sync"
 
 	"6.5840/kvraft1/rsm"
@@ -11,8 +12,8 @@ import (
 )
 
 type Val struct {
-	value   string
-	version rpc.Tversion
+	Value   string
+	Version rpc.Tversion
 }
 type KVServer struct {
 	me  int
@@ -42,8 +43,8 @@ func (kv *KVServer) DoOp(req any) any {
 			return reply
 		}
 		reply := rpc.GetReply{
-			Value:   val.value,
-			Version: val.version,
+			Value:   val.Value,
+			Version: val.Version,
 			Err:     rpc.OK,
 		}
 		return reply
@@ -59,18 +60,18 @@ func (kv *KVServer) DoOp(req any) any {
 			}
 			args.Version++
 			tmp_val := Val{
-				value:   args.Value,
-				version: args.Version,
+				Value:   args.Value,
+				Version: args.Version,
 			}
 			kv.m[args.Key] = tmp_val
 			return reply
 		}
-		if args.Version != val.version {
+		if args.Version != val.Version {
 			reply.Err = rpc.ErrVersion
 			return reply
 		}
-		val.value = args.Value
-		val.version++
+		val.Value = args.Value
+		val.Version++
 		kv.m[args.Key] = val
 		return reply
 	}
@@ -79,11 +80,28 @@ func (kv *KVServer) DoOp(req any) any {
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
-	return nil
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	var buf bytes.Buffer
+	enc := labgob.NewEncoder(&buf)
+	enc.Encode(kv.m)
+	return buf.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
 	// Your code here
+	if len(data) == 0 {
+		return
+	}
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	dec := labgob.NewDecoder(bytes.NewBuffer(data))
+	var tmpData map[string]Val
+	if err := dec.Decode(&tmpData); err != nil {
+		panic(err)
+	}
+	kv.m = tmpData
 }
 
 func (kv *KVServer) Get(args *rpc.GetArgs, reply *rpc.GetReply) {

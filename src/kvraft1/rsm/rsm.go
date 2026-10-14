@@ -1,12 +1,14 @@
 package rsm
 
 import (
+	"bytes"
 	"crypto/rand"
 	"math/big"
 	"sync"
 	"time"
 
 	"6.5840/kvsrv1/rpc"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	raft "6.5840/raft1"
 	"6.5840/raftapi"
@@ -25,6 +27,11 @@ type Op struct {
 type OpRes struct {
 	Id  int64
 	Req any
+}
+
+type RSMSnapshot struct {
+	LastApplied int
+	State       []byte
 }
 
 // A server (i.e., ../server.go) that wants to replicate itself calls
@@ -47,7 +54,8 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
-	waiting map[int]chan OpRes
+	waiting     map[int]chan OpRes
+	lastApplied int
 }
 
 // servers[] contains the ports of the set of
@@ -76,6 +84,8 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 	if !tester.UseRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
+	snapshot := persister.ReadSnapshot()
+	rsm.restoreSnapshot(snapshot)
 	go rsm.Reader()
 	return rsm
 }
@@ -139,23 +149,38 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 
 func (rsm *RSM) Reader() {
 	for msg := range rsm.applyCh {
-		if !msg.CommandValid {
-			continue
-		}
-		op := msg.Command.(Op)
-		result := rsm.sm.DoOp(op.Req)
-		rsm.mu.Lock()
-		ch, ok := rsm.waiting[msg.CommandIndex]
-		if ok {
-			delete(rsm.waiting, msg.CommandIndex)
-		}
-		rsm.mu.Unlock()
-		if ok {
-			ch <- OpRes{
-				Id:  op.Id,
-				Req: result,
+		if msg.CommandValid {
+			if msg.CommandIndex <= rsm.lastApplied {
+				continue
+			}
+			op := msg.Command.(Op)
+			result := rsm.sm.DoOp(op.Req)
+			rsm.lastApplied = msg.CommandIndex
+			if rsm.needSnapshot() {
+				data := rsm.makeSnapshot()
+				rsm.rf.Snapshot(msg.CommandIndex, data)
+			}
+			rsm.mu.Lock()
+			ch, ok := rsm.waiting[msg.CommandIndex]
+			if ok {
+				delete(rsm.waiting, msg.CommandIndex)
+			}
+			rsm.mu.Unlock()
+			if ok {
+				ch <- OpRes{
+					Id:  op.Id,
+					Req: result,
+				}
 			}
 		}
+		if msg.SnapshotValid {
+			if msg.SnapshotIndex <= rsm.lastApplied {
+				continue
+			}
+			rsm.restoreSnapshot(msg.Snapshot)
+			continue
+		}
+
 	}
 }
 
@@ -166,4 +191,45 @@ func (rsm *RSM) generateID() int64 {
 		panic(err)
 	}
 	return n.Int64()
+}
+
+func (rsm *RSM) needSnapshot() bool {
+	if rsm.maxraftstate == -1 {
+		return false
+	}
+	return rsm.rf.PersistBytes() >= rsm.maxraftstate
+}
+
+func (rsm *RSM) makeSnapshot() []byte {
+	state := rsm.sm.Snapshot()
+
+	snapshot := RSMSnapshot{
+		LastApplied: rsm.lastApplied,
+		State:       state,
+	}
+
+	var buf bytes.Buffer
+	enc := labgob.NewEncoder(&buf)
+
+	if err := enc.Encode(snapshot); err != nil {
+		panic(err)
+	}
+
+	return buf.Bytes()
+}
+
+func (rsm *RSM) restoreSnapshot(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+
+	var snapshot RSMSnapshot
+
+	dec := labgob.NewDecoder(bytes.NewBuffer(data))
+	if err := dec.Decode(&snapshot); err != nil {
+		panic(err)
+	}
+
+	rsm.sm.Restore(snapshot.State)
+	rsm.lastApplied = snapshot.LastApplied
 }
